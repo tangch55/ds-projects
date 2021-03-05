@@ -13,6 +13,8 @@ from sklearn.metrics import mean_squared_log_error, mean_squared_error
 ####
 from utils import fit_model_with_parameter_search, categorical_feature_extraction, convert_preds_to_submis
 
+np.random.seed(10)
+
 DATA_DIR="/Users/chengtang/Documents/Cheng-2021/house-price-prediction/house-prices-advanced-regression-techniques"
 
 highest_cor_vars = [
@@ -140,7 +142,7 @@ if __name__ == "__main__":
         clf = RandomForestRegressor(random_state=0)
 
     elif args.estimator == "lasso":
-        clf = Lasso(alpha=1.0, normalize=True)
+        clf = Lasso(alpha=2.0, normalize=True)
 
     # FEATURE EXTRACTION (using all available data)
     joint_df = pd.concat([df_train, df_val, df_test], ignore_index=True)
