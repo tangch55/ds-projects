@@ -27,6 +27,17 @@ highest_cor_vars = [
 'Fireplaces',
 ]
 
+
+cont_vars = ["LotFrontage", "LotArea",  "LandSlope",
+                   "MasVnrArea", "ExterQual", "ExterCond",
+                   "Foundation", "BsmtQual", "BsmtCond",
+                   "BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF",
+                  "BsmtUnfSF", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF",
+                  "LowQualFinSF", "GrLivArea", "BsmtHalfBath",
+                  "WoodDeckSF", "OpenPorchSF", "EnclosedPorch",
+                   "3SsnPorch", "ScreenPorch", "PoolArea", "GarageArea"
+            ]
+
 discrete_vars = ["MSSubClass", "Street", "Alley",
                  "LotShape", "OverallQual", "OverallCond",
                  "LandContour", "Utilities", "LotConfig",
@@ -45,8 +56,13 @@ discrete_vars = ["MSSubClass", "Street", "Alley",
                  "YearRemodAdd", "YearBuilt"
                  ]
 
+time_vars = ["YearBuilt", "YearRemodAdd",
+             "GarageYrBlt", "MoSold", "YrSold"]
+
+
+
 discrete_highest_cor_vars = set(highest_cor_vars) & set(discrete_vars)
-cont_highest_cor_vars = set(highest_cor_vars) - set(discrete_vars)
+cont_vars = set(cont_vars) | set(time_vars)
 
 
 def load_df(filepath, split_train=False, train_ratio=0.8):
@@ -65,6 +81,7 @@ def data_conversion(df, le_dict, discrete_vars, cont_vars, stage=None, one_hot=F
     bad_ids = []
     for ind, row in df.iterrows():
         feats = []
+        feats_names = dict()
         try:
             for feat in discrete_vars:
                 if feat in le_dict:
@@ -74,26 +91,42 @@ def data_conversion(df, le_dict, discrete_vars, cont_vars, stage=None, one_hot=F
                     #feats.extend(val)
                     if one_hot:
                         n_feats = len(le.classes_)
-                        feat = np.zeros(n_feats)
+                        feat_vec = np.zeros(n_feats)
                         if not np.isnan(val[0]):
-                            feat[val[0]] = 1
+                            feat_vec[val[0]] = 1
                         else:
-                            feat[val[0]] = np.nan
-                        feats.extend(feat)
+                            feat_vec[val[0]] = np.nan
+                        feats.extend(feat_vec)
+                        feats_names[feat] = len(feat_vec)
                     else:
                         feats.extend(val)
+                        feats_names[feat] = 1
 
             for feat in cont_vars:
                 if feat == "YearBuiltYearRemodAdd":
-                    feats.append(row["YearRemodAdd"])
+                    feat = "YearRemodAdd"
+                try:
+                    val = float(row[feat])
+                    feats.append(val)
+                except:
+                    feats.append(np.nan)
+                feats_names[feat] = "cont"
         except:
             bad_ids.append(ind)
             continue
         y.append(row["SalePrice"])
         X.append(feats)
 
+    if np.isnan(X).any():
+        from sklearn.impute import SimpleImputer
+        print("There are nan features: ", bad_ids)
+        print("Using simple imputation for the missing values")
+        imp = SimpleImputer(missing_values=np.nan, strategy='mean')
+        X = imp.fit_transform(X)
+
     if bad_ids:
         print(stage, bad_ids)
+    print(feats_names)
 
     return X, y
 
@@ -110,7 +143,7 @@ def predict(clf, df, discrete_vars, cont_vars, le_dict, one_hot=False):
     y_preds = clf.predict(X_test)
     for pred, l in zip(y_preds, y_test):
         print(pred, l)
-    #print("coeff", clf.coef_)
+    print("coeff", clf.coef_)
     error = mean_squared_log_error(y_preds, y_test)
     return error
 
@@ -121,6 +154,8 @@ if __name__ == "__main__":
     parser.add_argument('--estimator', type=str, default="decision_tree")
     parser.add_argument('--create_submission', action='store_true', default=False)
     parser.add_argument('--use_onehot', default=False, action='store_true')
+    parser.add_argument('--use_selected_features', default=False, action='store_true')
+
     args = parser.parse_args()
 
     ###
@@ -142,28 +177,53 @@ if __name__ == "__main__":
         clf = RandomForestRegressor(random_state=0)
 
     elif args.estimator == "lasso":
-        clf = Lasso(alpha=2.0, normalize=True)
+        clf = Lasso(normalize=True, random_state=0)
 
     # FEATURE EXTRACTION (using all available data)
     joint_df = pd.concat([df_train, df_val, df_test], ignore_index=True)
     le_dict = categorical_feature_extraction(joint_df, discrete_vars, stage="train")
 
     if not args.parameter_search:
-        if not args.estimator == "xgboost":
-            clf = train(clf, df_train, discrete_highest_cor_vars, cont_highest_cor_vars, le_dict, one_hot=args.use_onehot)
+        if args.estimator not in ["xgboost"]:
+            if args.use_selected_features:
+                clf = train(clf, df_train, discrete_highest_cor_vars, cont_vars, le_dict, one_hot=args.use_onehot)
+            else:
+                clf = train(clf, df_train, discrete_vars, cont_vars, le_dict, one_hot=args.use_onehot)
+
+            if args.estimator == "lasso":
+                print("fitted coeff", clf.coef_)
+
+        # elif args.estimator == "lasso":
+        #     X_tr, y_tr = data_conversion(df_train, le_dict, discrete_vars, cont_vars, stage="train", one_hot=one_hot)
+        #     clf = clf.path(X_tr, y_tr)
+
         else:
-            X_train, y_train = data_conversion(df_train, le_dict, discrete_highest_cor_vars,
-                                                cont_highest_cor_vars, one_hot=args.use_onehot)
+            if args.use_selected_features:
+                X_train, y_train = data_conversion(df_train, le_dict, discrete_highest_cor_vars,
+                                                cont_vars, one_hot=args.use_onehot)
+            else:
+                X_train, y_train = data_conversion(df_train, le_dict, discrete_vars,
+                                                cont_vars, one_hot=args.use_onehot)
+
             dtrain = xgb.DMatrix(X_train, label=y_train)
-            X_test, y_test = data_conversion(df_test, le_dict, discrete_highest_cor_vars,
-                                                cont_highest_cor_vars, one_hot=args.use_onehot)
+            if args.use_selected_features:
+                X_test, y_test = data_conversion(df_test, le_dict, discrete_highest_cor_vars,
+                                                cont_vars, one_hot=args.use_onehot)
+            else:
+                X_test, y_test = data_conversion(df_test, le_dict, discrete_vars,
+                                                cont_vars, one_hot=args.use_onehot)
+
             dtest = xgb.DMatrix(X_test, label=y_test)
             evallist = [(dtest, 'eval'), (dtrain, 'train')]
             clf = xgb.train(param, dtest, 10, evallist)
     else:
         ### cv-based grid search
-        X_train, y_train = data_conversion(df_train, le_dict, discrete_highest_cor_vars,
-                                                cont_highest_cor_vars, one_hot=args.use_onehot)
+        if args.use_selected_features:
+            X_train, y_train = data_conversion(df_train, le_dict, discrete_highest_cor_vars,
+                                                cont_vars, one_hot=args.use_onehot)
+        else:
+            X_train, y_train = data_conversion(df_train, le_dict, discrete_vars,
+                                                cont_vars, one_hot=args.use_onehot)
 
         if args.estimator == "decision_tree":
             params = {
@@ -174,16 +234,28 @@ if __name__ == "__main__":
                 "n_estimators": [10, 20, 50, 100, 500],
                 "min_samples_split": [2, 4, 8, 16]
             }
+        elif args.estimator == "lasso":
+            params = {
+                "alpha": [0.1, 1, 1.5, 2, 5]
+            }
         clf = fit_model_with_parameter_search(clf, params, 5, X_train, y_train)
 
     #print("Best parameters: ", clf.best_params_)
-    error = predict(clf, df_val, discrete_highest_cor_vars, cont_highest_cor_vars, le_dict, one_hot=args.use_onehot)
+    if args.use_selected_features:
+        error = predict(clf, df_val, discrete_highest_cor_vars, cont_vars, le_dict, one_hot=args.use_onehot)
+    else:
+        error = predict(clf, df_val, discrete_vars, cont_vars, le_dict, one_hot=args.use_onehot)
 
     print("val mean_squared_log_error: ", error)
 
     if args.create_submission:
-        outfname = convert_preds_to_submis(clf, le_dict, df_test, discrete_highest_cor_vars,
-                                                    cont_highest_cor_vars,
+        if args.use_selected_features:
+            outfname = convert_preds_to_submis(clf, le_dict, df_test, discrete_highest_cor_vars,
+                                                    cont_vars,
+                                                    one_hot=args.use_onehot)
+        else:
+            outfname = convert_preds_to_submis(clf, le_dict, df_test, discrete_vars,
+                                                    cont_vars,
                                                     one_hot=args.use_onehot)
 
         print("generated submission {}".format(outfname))

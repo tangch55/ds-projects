@@ -65,7 +65,12 @@ def fit_test_data(clf, le_dict, df_test, discrete_vars, cont_vars, one_hot=False
                     feats.extend(val)
         for feat in cont_vars:
             if feat == "YearBuiltYearRemodAdd":
-                feats.append(row["YearRemodAdd"])
+                feat = "YearRemodAdd"
+            try:
+                val = float(row[feat])
+                feats.append(val)
+            except:
+                feats.append(np.nan)
 
         X.append(feats)
 
