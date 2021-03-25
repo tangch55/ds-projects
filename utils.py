@@ -1,8 +1,40 @@
 import pandas as pd
 import numpy as np
 from sklearn import preprocessing
-from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, KFold, cross_val_score
+from sklearn.metrics import make_scorer, mean_squared_error, mean_squared_log_error
 ###
+
+class MyLabelEncoder(object):
+    def __init__(self, nan_val=None):
+        self.label_ind = None
+        self.label_dict = None
+        self.nan_val = nan_val
+
+    def fit(self, column):
+        self.label_ind = 0
+        self.label_dict = dict()
+        for label in column:
+            if label not in self.label_dict:
+                self.label_dict[label] = self.label_ind
+                self.label_ind += 1
+
+    def get_classes(self):
+        return list(self.label_dict.keys())
+
+    def get_nan_encoding(self):
+        if self.nan_val is not None and self.nan_val in self.label_dict:
+            return self.label_dict[self.nan_val]
+        else:
+            return None
+
+    def transform(self, column):
+        column_encodings = []
+        #print(self.label_dict, column[0])
+        for label in column:
+            column_encodings.append(self.label_dict[label])
+        return np.array(column_encodings)
+
 
 def get_feat_to_label_corr():
     pass
@@ -10,86 +42,96 @@ def get_feat_to_label_corr():
 def get_feat_to_feat_corr():
     pass
 
-def fit_model_with_parameter_search(estim, params, n_cv, X, y):
-    grid_model = GridSearchCV(estimator=estim, param_grid=params, cv=n_cv, refit=True)
-    fit_model = grid_model.fit(X, y)
-    return fit_model
+def acc(preds, labels):
+    pass
 
 
-def categorical_feature_extraction(df, selected_vars, stage=None):
+def na_stat(df, drop_bad_features=True):
+    Total = df.isnull().sum().sort_values(ascending=False)
+    percent = (df.isnull().sum() / df.isnull().count()).sort_values(ascending=False)
+    missing_data = pd.concat([Total, percent], axis=1, keys=['Total', 'Percent'])
+    print(missing_data.head(25))
+    if drop_bad_features:
+        print(" bad features ")
+        print(missing_data[missing_data['Percent'] > 0.01].T.columns)
+        return missing_data[missing_data['Percent'] > 0.01].T.columns
+
+
+def categorical_feature_extraction(df, selected_vars, fill_null=False, stage=None):
     # label conversion
     count = 0
     le_dict = dict()
     untransformed_feats = list()
-    for ind, row in df.T.iterrows():
+
+    # convert null values
+    target = df['SalePrice']
+    df_feats = df.drop(columns=['SalePrice'])
+    if fill_null:
+        df_feats.fillna("NO VALUE", inplace=True)
+
+    for ind, row in df_feats.T.iterrows():
         if ind in selected_vars:
-            try:
-                le = preprocessing.LabelEncoder()
-                le.fit(row)
-                print(stage, len(row), ind, le.classes_)
-                le_dict[ind] = le
-                count += 1
-            except:
-                untransformed_feats.append(ind)
+            #try:
+                #le = preprocessing.LabelEncoder()
+            if fill_null:
+                le = MyLabelEncoder(nan_val="NO VALUE")
+            else:
+                le = MyLabelEncoder()
+            le.fit(row)
+            #print(stage, len(row), ind, le.get_classes())
+            le_dict[ind] = le
+            count += 1
+            # except:
+            #     untransformed_feats.append(ind)
     print("un-transformed features: ", ind)
-    return le_dict
+    df_feats['SalePrice'] = target
+    #print(df_feats.head())
+    return df_feats, le_dict
 
 
-def fit_test_data(clf, le_dict, df_test, discrete_vars, cont_vars, one_hot=False, num_features=None):
+#######
+
+def fit_model_with_parameter_search(estim, params, n_cv, X, y, transform_target=False):
+    if not transform_target:
+        scorer = make_scorer(mean_squared_log_error, greater_is_better=False)
+    else:
+        scorer = make_scorer(mean_squared_error, greater_is_better=False)
+    grid_model = GridSearchCV(estimator=estim, param_grid=params, cv=n_cv, refit=True, scoring=scorer)
+    fit_model = grid_model.fit(X, y)
+    print(grid_model.best_params_)
+    return fit_model
+
+def fit_test_data(clf, df_test, X_test):
     #le_dict = categorical_feature_extraction(df_test, discrete_vars)
-    ids, X = [],  []
-    bad_ids = []
+    ids = []
     for ind, row in df_test.iterrows():
         ids.append(row["Id"])
-        feats = []
-        for feat in discrete_vars:
-            if feat in le_dict:
-                le = le_dict[feat]
-                #print(feat, le.classes_)
-                # cheating here with nan value (need to fix)
-                if str(row[feat]) == "nan":
-                    val = [np.nan]
-                else:
-                    val = le.transform([row[feat]])
-                #feats.extend(val)
-                if one_hot:
-                    n_feats = len(le.classes_)
-                    feat = np.zeros(n_feats)
-                    if not np.isnan(val[0]):
-                        feat[val[0]] = 1
-                    else:
-                        #feat[le.classes_.index(val[0])] = np.nan
-                        feat[-1] = np.nan # cheating here (need to fix)
-                    feats.extend(feat)
-                else:
-                    feats.extend(val)
-        for feat in cont_vars:
-            if feat == "YearBuiltYearRemodAdd":
-                feat = "YearRemodAdd"
-            try:
-                val = float(row[feat])
-                feats.append(val)
-            except:
-                feats.append(np.nan)
+    assert len(ids) == len(X_test)
+    y_preds = clf.predict(X_test)
+    return ids, y_preds
 
-        X.append(feats)
+#######
+def msle_cv_eval(X, y, est, transform_target=False):
+    if transform_target:
+        y = np.log1p(y)
+        #scorer = make_scorer(mean_squared_error, greater_is_better=False)
+        kf = KFold(5, shuffle=True, random_state=0)
+        rmse = np.sqrt(-cross_val_score(est, X, y, scoring="neg_mean_squared_error", cv=kf))
+        return rmse
+    else:
+        #scorer = make_scorer(mean_squared_log_error, greater_is_better=False)
+        kf = KFold(5, shuffle=True, random_state=0)
+        rmsle = np.sqrt(-cross_val_score(est, X, y, scoring="neg_mean_squared_log_error", cv=kf))
+        return rmsle
 
-    if np.isnan(X).any():
-        from sklearn.impute import SimpleImputer
-        print("There are nan features: ", bad_ids)
-        print("Using simple imputation for the missing values")
-        imp = SimpleImputer(missing_values=np.nan, strategy='mean')
-        X = imp.fit_transform(X)
-
-    y_preds = clf.predict(X)
-    return ids, y_preds, bad_ids
-
-
-def convert_preds_to_submis(clf, le_dict, df_test, discrete_vars, cont_vars, one_hot=False):
+#######
+def convert_preds_to_submis(clf, df_test, X_test, transform_target=False):
     import datetime
     ct = datetime.datetime.now()
     ct = str(ct).replace(" ", "-")
-    ids, y_preds, bad_ids = fit_test_data(clf, le_dict, df_test, discrete_vars, cont_vars, one_hot=one_hot)
+    ids, y_preds = fit_test_data(clf, df_test, X_test)
+    if transform_target:
+        y_preds = np.expm1(y_preds)
     df = pd.DataFrame({'Id': ids, 'SalePrice': y_preds})
     outfname = "submis-{}.csv".format(ct)
     df.to_csv(outfname, index=False)
